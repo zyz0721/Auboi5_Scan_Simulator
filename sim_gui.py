@@ -19,7 +19,7 @@ from PyQt5.QtGui import QFont, QImage, QPixmap
 from pyvistaqt import QtInteractor
 
 import curve_utils
-from mujoco_sim import MuJoCoSimulator
+from mjplayground_sim import MuJoCoSimulator
 
 SCENE_XML_PATH = "mjcf/scene_with_curvemodel.xml"  # 场景 XML 包含所有 MJCF 所需文件
 SAMPLE_PATH = "models/curve_model.stl"   # 待扫描样品模型
