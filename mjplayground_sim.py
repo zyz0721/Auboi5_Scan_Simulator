@@ -8,7 +8,8 @@ from casadi_ik import Kinematics
 
 class MuJoCoSimulator:
     """
-    MuJoCo 仿真控制器 - 性能优化版
+    MuJoCo 仿真控制器 - playground性能优化版
+    常用需修改参数：注释中标注[参数可调]，搜索可查询，为 mujoco 仿真环境中一些基础设置，可后续单独封装
     优化策略：
     1. Control Decimation: 分离物理频率(500Hz)与控制频率(50Hz)，大幅减少 CasADi 计算次数
     2. Memory Pre-allocation: 预分配渲染内存，减少 GC 压力
@@ -26,20 +27,20 @@ class MuJoCoSimulator:
         self.running = True
         self.target_qpos = None  # 缓存当前目标的关节角度
 
-        # --- [优化 1] 时间步长管理 ---
-        self.physics_dt = 0.002  # 物理仿真步长 (500Hz)
-        self.control_dt = 0.02  # 控制/IK 步长 (50Hz)
+        # 时间步长管理
+        self.physics_dt = 0.002  # [参数可调]物理仿真步长 (500Hz)
+        self.control_dt = 0.02  # [参数可调]控制/IK 步长 (50Hz)
         # 计算每次控制指令后，物理引擎需要空跑多少步 (Decimation)
         self.n_substeps = int(self.control_dt / self.physics_dt)
 
         # 扫描控制参数
         self.current_idx = 0
         self.last_scan_time = 0
-        self.scan_interval = 0.5  # 扫描点切换间隔
+        self.scan_interval = 0.5  # [参数可调]扫描点切换间隔
 
         self.path_points = None
         self.path_normals = None
-        self.scan_height = 0.1
+        self.scan_height = 0.1  # [参数可调] 扫描时末端离表面的高度 (米)
         self.T_target_cache = None
 
         # 加载模型
@@ -81,7 +82,7 @@ class MuJoCoSimulator:
         self.gl_context = mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_150)
         self.scene = mujoco.MjvScene(self.model, maxgeom=10000)
 
-        # --- [优化 2] 预分配渲染内存，避免循环中重复 malloc ---
+        # 预分配渲染内存，避免循环中重复 malloc
         self.viewport = mujoco.MjrRect(0, 0, self.cam_res[0], self.cam_res[1])
         # 预分配 Buffer (注意 OpenGL 读取通常需要对齐，这里简化处理)
         self.rgb_buffer = np.zeros((self.cam_res[1], self.cam_res[0], 3), dtype=np.uint8)
@@ -118,7 +119,7 @@ class MuJoCoSimulator:
             mujoco.mj_forward(self.model, self.data)
 
     def perform_ik_step(self):
-        """执行一次 IK 计算"""
+        # 执行一次 IK 计算
         if self.path_points is None: return
 
         target_pt = self.path_points[self.current_idx]
@@ -141,11 +142,8 @@ class MuJoCoSimulator:
             pass
 
     def step(self):
-        """
-        [核心修改] 仿真主循环
-        """
 
-        # --- A. 控制层 (50Hz) ---
+        # A. 控制层 (50Hz)
         # 负责路径规划和 IK 解算，频率较低
         if not self.paused and self.path_points is not None:
             now = time.time()
@@ -153,13 +151,11 @@ class MuJoCoSimulator:
                 self.current_idx = (self.current_idx + 1) % len(self.path_points)
                 self.last_scan_time = now
 
-        # 每一帧 Control Step 计算一次 IK 目标
-        # (CasADi 在这里被调用，但频率降低了 10 倍)
+        # 每一帧 Control Step 计算一次 IK 目标(CasADi 在这里被调用，频率降低)
         self.perform_ik_step()
 
-        # --- B. 物理层 (500Hz) ---
-        # 物理引擎为了数值稳定性需要高频运行
-        # 我们让物理引擎连续跑 n_substeps 步来追赶一个 control_step
+        # B. 物理层 (500Hz)
+        # 物理引擎为了数值稳定性需要高频运行,让物理引擎连续跑 n_substeps 步来追赶一个 control_step
         for _ in range(self.n_substeps):
 
             # 应用控制目标
@@ -168,23 +164,22 @@ class MuJoCoSimulator:
                 if self.model.nu >= 6:
                     self.data.ctrl[:6] = self.target_qpos
                 else:
-                    # 否则直接设置 qpos (Kinematic mode)，简单粗暴但有效
+                    # 否则直接设置 qpos (Kinematic mode)
                     self.data.qpos[:6] = self.target_qpos
                     self.data.qvel[:6] = 0.0
 
             # 物理步进
             mujoco.mj_step(self.model, self.data)
 
-        # --- C. 查看器同步 ---
+        # C. 查看器同步
         if self.viewer.is_running():
             self.viewer.user_scn.ngeom = 0
             self._add_markers_to_scene(self.viewer.user_scn)
             self.viewer.sync()
 
     def render_offscreen(self):
-        """
-        优化的渲染函数：复用内存，减少拷贝
-        """
+
+        # 优化的渲染函数：复用内存，减少拷贝
         glfw.make_context_current(self.offscreen_window)
 
         # 1. 渲染机器人视角
