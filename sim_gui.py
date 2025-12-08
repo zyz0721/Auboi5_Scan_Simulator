@@ -122,7 +122,7 @@ class MainWindow(QMainWindow):
         # 33ms 约等于 30FPS 的触发频率
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.game_loop)
-        self.timer.start(33)
+        self.timer.start(25)
 
         # FPS 统计
         self.fps_counter = 0

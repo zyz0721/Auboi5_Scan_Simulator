@@ -1,5 +1,5 @@
 <mujoco model="aubo_i5 scene">
-    <include file="aubo_i5_withcam.xml"/>
+    <include file="aubo_i5_withdetector.xml"/>
 
     <statistic center="0.3 0 0.4" extent="0.8"/>
 
