@@ -260,5 +260,22 @@ class MuJoCoSimulator:
         if self.viewer:
             self.viewer.close()
         if self.offscreen_window:
-            glfw.destroy_window(self.offscreen_window)
-        glfw.terminate()
+            try:
+                glfw.make_context_current(self.offscreen_window)
+                if hasattr(self, 'scene') and self.scene:
+                    self.scene.free()
+                    self.scene = None
+                if hasattr(self, 'gl_context') and self.gl_context:
+                    self.gl_context.free()
+                    self.gl_context = None
+            except Exception:
+                pass
+            try:
+                glfw.destroy_window(self.offscreen_window)
+                self.offscreen_window = None
+            except Exception:
+                pass
+        try:
+            glfw.terminate()
+        except Exception:
+            pass
