@@ -77,7 +77,7 @@
                       <body name="detector_body" pos="-0.1031 0.008 0.06" euler="0 0 0">
                           <geom type="mesh" mesh="detector_mesh" material="metallic_black" class="visual"/>
                           <geom type="mesh" mesh="detector_mesh" class="collision"/>
-                          <camera name="ee_camera" pos="0.04 0 0" euler="3.14 0 0" fovy="60"/>
+                          <camera name="ee_camera" pos="0.04 0.0268 0" euler="3.14 0 0" fovy="60"/>
                       </body>
                   </body>
 

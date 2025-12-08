@@ -38,10 +38,13 @@ class MuJoCoSimulator:
         self.last_scan_time = 0
         self.scan_interval = 0.5  # [参数可调]扫描点切换间隔
 
+        self.tcp_offset = [0.0, 0.067, 0.0965]    # [参数可调]3D模型理论末端相对位置差
+
         self.path_points = None
         self.path_normals = None
         self.scan_height = 0.1  # [参数可调] 扫描时末端离表面的高度 (米)
         self.T_target_cache = None
+        self.T_twist_cache = None
 
         # 加载模型
         try:
@@ -125,15 +128,20 @@ class MuJoCoSimulator:
         target_pt = self.path_points[self.current_idx]
         target_nm = self.path_normals[self.current_idx]
 
-        T_target = self.compute_target_matrix(target_pt, target_nm, self.scan_height)
-        self.T_target_cache = T_target
+        T_detector_target = self.compute_target_matrix(target_pt, target_nm, self.scan_height)
+        self.T_target_cache = T_detector_target
+
+        # 将探测器目标位姿 转换为 wrist3_Link 的目标位姿：Wrist_Pos = Detector_Pos - Rotation_Matrix * Offset_Vector
+        T_wrist_target = T_detector_target.copy()
+        T_wrist_target[:3, 3] -= T_wrist_target[:3, :3] @ self.tcp_offset
+        self.T_twist_cache = T_wrist_target
 
         # Warm Start: 使用当前角度加速收敛
         init_q = self.data.qpos[:6].copy()
 
         try:
             # CasADi 计算瓶颈所在
-            q_sol, info = self.ik_solver.ik(T_target, current_arm_motor_q=init_q)
+            q_sol, info = self.ik_solver.ik(T_wrist_target, current_arm_motor_q=init_q)
             if info["success"]:
                 # 限制关节极限
                 sol = np.clip(q_sol, self.model.jnt_range[:6, 0], self.model.jnt_range[:6, 1])
@@ -227,8 +235,20 @@ class MuJoCoSimulator:
                 mujoco.mjv_initGeom(
                     scene.geoms[scene.ngeom],
                     type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[0.003, 0, 0],
+                    size=[0.002, 0, 0],
                     pos=pt_tcp,
+                    mat=np.eye(3).flatten(),
+                    rgba=[0, 1, 0, 0.6]
+                )
+                scene.ngeom += 1
+            # 绿色：机械臂末端点
+            if self.T_twist_cache is not None:
+                arm_tcp = self.T_twist_cache[:3, 3]
+                mujoco.mjv_initGeom(
+                    scene.geoms[scene.ngeom],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.01, 0, 0],
+                    pos=arm_tcp,
                     mat=np.eye(3).flatten(),
                     rgba=[0, 1, 0, 0.6]
                 )
