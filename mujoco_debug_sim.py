@@ -4,13 +4,12 @@ import numpy as np
 import glfw
 import time
 from casadi_ik import Kinematics
-import trimesh.transformations as tf  # 依然需要 trimesh 库来辅助做矩阵计算
+import trimesh.transformations as tf
 
 
 class MuJoCoSimulator:
-    """
-    MuJoCo 仿真控制器 - 增加数据输出接口
-    """
+
+    # MuJoCo 仿真控制器 - 增加数据输出接口 未完成
 
     def __init__(self, xml_path, end_joint, robot_model_path, cam_res=(640, 640)):
         # 降低分辨率以提高曲线图刷新性能
@@ -48,8 +47,7 @@ class MuJoCoSimulator:
         self.ik_solver = Kinematics(self.end_joint)
         self.ik_solver.buildFromMJCF(self.robot_model_path)
 
-        # 【关键】：获取 XML 中定义的末端 Site ID
-        # 这样我们就能直接读取末端的实际位置，而不需要额外加 sensor
+        # 获取 XML 中定义的末端 Site ID 直接读取末端的实际位置
         self.ee_site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "ee_site")
 
         self.init_offscreen()
@@ -176,9 +174,9 @@ class MuJoCoSimulator:
         ref_axis = np.array([1, 0, 0])
         # 防止万向节死锁
         if np.abs(np.dot(z_axis, ref_axis)) > 0.9: ref_axis = np.array([0, 1, 0])
-        y_axis = np.cross(z_axis, ref_axis);
+        y_axis = np.cross(z_axis, ref_axis)
         y_axis /= np.linalg.norm(y_axis)
-        x_axis = np.cross(y_axis, z_axis);
+        x_axis = np.cross(y_axis, z_axis)
         x_axis /= np.linalg.norm(x_axis)
         T = np.eye(4)
         T[:3, :3] = np.column_stack((x_axis, y_axis, z_axis))

@@ -11,11 +11,11 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QImage, QPixmap
 from pyvistaqt import QtInteractor
-import pyqtgraph as pg  # 需安装: pip install pyqtgraph
+import pyqtgraph as pg
 
 import curve_utils
 from mujoco_debug_sim import MuJoCoSimulator
-from aubo_interface import AuboRealRobot  # 导入刚才生成的新接口文件
+from aubo_interface import AuboRealRobot
 
 # 常量定义
 SCENE_XML_PATH = "mjcf/scene_with_curvemodel.xml"
