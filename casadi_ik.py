@@ -145,7 +145,7 @@ class Kinematics:
 
             # 计算逆动力学（关节力矩）
             sol_tauff = pin.rnea(self.model, self.data, sol_q, v, np.zeros(self.model.nv))
-            import ipdb; ipdb.set_trace()  # 触发调试器，用于排查问题
+            # import ipdb; ipdb.set_trace()  # 触发调试器，用于排查问题
             # 补全力矩数组
             sol_tauff = np.concatenate([sol_tauff, np.zeros(self.model.nq - sol_tauff.shape[0])], axis=0)
 
