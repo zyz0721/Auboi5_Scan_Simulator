@@ -100,8 +100,8 @@ class AuboScanTask(base.Task):
 
         # 1. 高度检测
         try:
-            if 'detector_site' in physics.named.data.site_xpos:
-                z_val = physics.named.data.site_xpos['detector_site'][2]
+            if 'wrist3_Link' in physics.named.data.site_xpos:
+                z_val = physics.named.data.site_xpos['wrist3_Link'][2]
             else:
                 z_val = physics.data.xpos[-1][2]
 
@@ -245,8 +245,8 @@ class AuboScanTask(base.Task):
             return COLLISION_PENALTY
 
         try:
-            if 'detector_site' in physics.named.data.site_xpos:
-                ee_pos = physics.named.data.site_xpos['detector_site']
+            if 'wrist3_Link' in physics.named.data.site_xpos:
+                ee_pos = physics.named.data.site_xpos['wrist3_Link']
             else:
                 ee_pos = physics.data.xpos[-1]
         except:
@@ -288,8 +288,8 @@ class AuboScanTask(base.Task):
         obs['qvel'] = qvel
 
         try:
-            if 'detector_site' in physics.named.data.site_xpos:
-                ee_pos = physics.named.data.site_xpos['detector_site']
+            if 'wrist3_Link' in physics.named.data.site_xpos:
+                ee_pos = physics.named.data.site_xpos['wrist3_Link']
             else:
                 ee_pos = physics.data.xpos[-1]
         except:
@@ -327,11 +327,11 @@ class AuboScanTask(base.Task):
 
 
 def load_env():
-    xml_path = "aubo_i5_withdetector.xml"
+    xml_path = "mjcf/aubo_i5_withdetector.xml"
     if not os.path.exists(xml_path):
         xml_path = os.path.join("mjcf", "aubo_i5_withdetector.xml")
     if not os.path.exists(xml_path):
-        xml_path = "aubo_i5_withdetector.xml"
+        xml_path = "mjcf/aubo_i5_withdetector.xml"
 
     task = AuboScanTask(xml_path)
 
