@@ -6,6 +6,8 @@ from dm_control.rl import control
 from dm_control.suite import base
 from scipy.spatial.transform import Rotation as R
 
+print(">>> Safe-IK Environment (Auto-Terminate Version) Loaded <<<")
+
 # 引入你的自定义工具
 try:
     from curve_utils import CurvePathPlanner
@@ -19,24 +21,20 @@ CONTROL_TIMESTEP = 0.02  # 50Hz
 PHYSICS_TIMESTEP = 0.002  # 500Hz
 
 # --- 配置参数 ---
-MIN_HEIGHT_LIMIT = 0.05  # 最小高度限制 (米)
-COLLISION_PENALTY = -10.0  # 发生碰撞时的惩罚分数
-NAN_PENALTY = -50.0  # 发生数值爆炸(NaN)时的严厉惩罚
-COLLISION_TERMINATE = True  # 发生碰撞是否立即结束回合
+MIN_HEIGHT_LIMIT = 0.05  # 最小高度限制
+COLLISION_PENALTY = -10.0  # 碰撞惩罚
+NAN_PENALTY = -50.0  # NaN惩罚
+COLLISION_TERMINATE = True  # 撞了就停
 
 
 class AuboScanTask(base.Task):
-    """
-    智能避障版 Aubo 扫描任务环境 (Safe IK 增强版)
-    """
-
     def __init__(self, xml_path, random_state=None):
         super().__init__(random=random_state)
         self._random_state = self._random
 
         self.curve_manager = CurvePathPlanner()
 
-        # IK 求解器初始化
+        # IK 求解器初始化 (针对 wrist3_Link)
         self.ik_solver = Kinematics("wrist3_Link")
         self.ik_solver.buildFromMJCF(xml_path)
 
@@ -44,12 +42,10 @@ class AuboScanTask(base.Task):
         self._latency_buffer = collections.deque(maxlen=5)
         self._current_base_target = None
 
-        # 统计变量
         self.collision_count = 0
         self.ik_fail_count = 0
 
     def _pose_to_matrix(self, pose_6d):
-        """[x,y,z,rx,ry,rz] -> 4x4 Matrix"""
         t = pose_6d[:3]
         r_euler = pose_6d[3:]
         mat = np.eye(4)
@@ -59,49 +55,30 @@ class AuboScanTask(base.Task):
         return mat
 
     def _safe_ik(self, target_matrix, q_guess):
-        """
-        【核心修复】带异常捕获的 IK 调用。
-        无论 CasADi 报什么错 (NaN, Singularity)，这里都会接住。
-        """
-        # 1. 输入检查: 如果输入本身就是 NaN，直接拒绝
         if np.isnan(target_matrix).any() or np.isnan(q_guess).any():
             return None, "Input contains NaN"
 
         try:
-            # 2. 尝试求解
-            # 这里的 try...except 是防止进程退出的最后一道防线
             result = self.ik_solver.ik(target_matrix, q_guess)
-
-            # 适配不同的返回格式
             if isinstance(result, tuple):
                 q_sol = result[0]
                 info = result[1] if len(result) > 1 else "success"
             else:
                 q_sol = result
                 info = "success"
-
             return q_sol, info
-
         except Exception as e:
-            # 3. 捕获任何错误，绝对不让程序崩溃
             self.ik_fail_count += 1
-            # 只有在非常频繁报错时才打印，避免刷屏
-            if self.ik_fail_count % 100 == 0:
-                print(f"[Warning] IK Failed {self.ik_fail_count} times. Ignored.")
             return None, str(e)
 
     def _check_collision_and_height(self, physics):
-        """
-        检测当前物理状态是否合法。
-        """
-        # 0. NaN 检查 (物理引擎是否炸了)
         if np.isnan(physics.data.qpos).any() or np.isnan(physics.data.qvel).any():
             return False, "physics_nan"
 
-        # 1. 高度检测
         try:
-            if 'wrist3_Link' in physics.named.data.site_xpos:
-                z_val = physics.named.data.site_xpos['wrist3_Link'][2]
+            # 尝试获取 wrist3_Link 高度，如果不行则获取 detector_body
+            if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
+                z_val = physics.named.data.xpos['wrist3_Link'][2]
             else:
                 z_val = physics.data.xpos[-1][2]
 
@@ -110,14 +87,12 @@ class AuboScanTask(base.Task):
         except:
             pass
 
-            # 2. 物理碰撞检测
         try:
             for i in range(physics.data.ncon):
                 contact = physics.data.contact[i]
                 g1, g2 = contact.geom1, contact.geom2
                 b1 = physics.model.geom_bodyid[g1]
                 b2 = physics.model.geom_bodyid[g2]
-
                 if b1 == 0 or b2 == 0: continue
                 return False, "physical_collision"
         except Exception:
@@ -128,28 +103,26 @@ class AuboScanTask(base.Task):
     def initialize_episode(self, physics):
         self._randomize_physics(physics)
         self.collision_count = 0
-        self.ik_fail_count = 0
 
-        # 生成无碰撞路径
         valid_path = []
         for _ in range(5):
             raw_path = self._generate_mock_path_pattern()
             valid_path = self._filter_valid_path(physics, raw_path)
-            if len(valid_path) > 10:
+            # 路径稍微长一点才采纳
+            if len(valid_path) > 20:
                 break
 
         if len(valid_path) == 0:
-            # 兜底：如果生成失败，使用一个极其安全的姿态
             default_pose = np.concatenate([[0.4, -0.2, 0.5], [3.14, 0, 0]])
             valid_path = [default_pose] * 50
 
         self.path_points = valid_path
         self.path_index = 0
 
+        # 初始化位置
         start_pose_6d = self.path_points[0]
         start_matrix = self._pose_to_matrix(start_pose_6d)
 
-        # 初始 IK (使用 Safe IK)
         q_guess = [0, -0.2, -1.5, 0.3, 1.57, 0]
         q_start, _ = self._safe_ik(start_matrix, q_guess)
 
@@ -171,7 +144,6 @@ class AuboScanTask(base.Task):
 
         for pose_6d in raw_path:
             mat = self._pose_to_matrix(pose_6d)
-            # 使用 Safe IK
             q_sol, _ = self._safe_ik(mat, last_q)
 
             if q_sol is not None:
@@ -181,51 +153,42 @@ class AuboScanTask(base.Task):
                 if is_valid:
                     valid_points.append(pose_6d)
                     last_q = q_sol
-            else:
-                pass  # IK 失败直接跳过
 
         physics.data.qpos[:] = qpos_backup
         physics.forward()
         return valid_points
 
     def before_step(self, action, physics):
-        # 检查是否因为 NaN 导致不需要计算了
         if np.isnan(physics.data.qpos).any():
             return
 
+        # 更新目标点
         if self.path_index < len(self.path_points):
             base_pose_target_6d = self.path_points[self.path_index]
             self.path_index += 1
         else:
+            # 保持最后一个点
             base_pose_target_6d = self.path_points[-1]
+            # 注意：这里的 path_index 还会继续增加，用于 get_termination 判断
 
         self._current_base_target = base_pose_target_6d
 
         q_guess = physics.data.qpos[:].copy()
 
-        # --- IK 阶段 1: 基准姿态 ---
         base_matrix = self._pose_to_matrix(base_pose_target_6d)
-
-        # 【关键】替换原来的 ik() 调用为 _safe_ik()
         q_base, _ = self._safe_ik(base_matrix, q_guess)
 
-        if q_base is None:
-            q_base = q_guess
-            # 仅在需要时增加计数，不要让训练中断
-            self.ik_fail_count += 1
+        if q_base is None: q_base = q_guess
 
-        # --- IK 阶段 2: 叠加 RL 动作 ---
+        # 叠加动作
         residual_pos = action[:3] * self.action_scale
         target_pose_with_residual = base_pose_target_6d.copy()
         target_pose_with_residual[:3] += residual_pos
 
         target_matrix = self._pose_to_matrix(target_pose_with_residual)
-
-        # 【关键】替换原来的 ik() 调用为 _safe_ik()
         q_target, _ = self._safe_ik(target_matrix, q_base)
 
-        if q_target is None:
-            q_target = q_base
+        if q_target is None: q_target = q_base
 
         self._latency_buffer.append(q_target)
         delay_steps = self._random_state.randint(1, self._latency_buffer.maxlen)
@@ -237,16 +200,13 @@ class AuboScanTask(base.Task):
     def get_reward(self, physics):
         is_safe, reason = self._check_collision_and_height(physics)
 
-        if reason == "physics_nan":
-            return NAN_PENALTY
-
-        if not is_safe:
-            self.collision_count += 1
-            return COLLISION_PENALTY
+        if reason == "physics_nan": return NAN_PENALTY
+        if not is_safe: return COLLISION_PENALTY
 
         try:
-            if 'wrist3_Link' in physics.named.data.site_xpos:
-                ee_pos = physics.named.data.site_xpos['wrist3_Link']
+            # 优先使用 wrist3_Link
+            if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
+                ee_pos = physics.named.data.xpos['wrist3_Link']
             else:
                 ee_pos = physics.data.xpos[-1]
         except:
@@ -255,20 +215,20 @@ class AuboScanTask(base.Task):
         target_pos = self._current_base_target[:3]
         dist = np.linalg.norm(target_pos - ee_pos)
 
-        reward_dist = np.exp(-10 * dist)
-        reward_alive = 0.1
+        # 【增强奖励】加大对精度的奖励权重，鼓励消除那2cm误差
+        # 如果距离 < 2cm，这个 exp 值会迅速接近 3.0
+        reward_dist = 3.0 * np.exp(-15 * dist)
 
-        return reward_dist + reward_alive
+        return reward_dist
 
     def get_termination(self, physics):
         is_safe, reason = self._check_collision_and_height(physics)
 
-        if reason == "physics_nan":
+        if reason == "physics_nan" or (not is_safe and COLLISION_TERMINATE):
             return 1.0  # Failure
 
-        if not is_safe and COLLISION_TERMINATE:
-            return 1.0  # Failure
-
+        # 【关键修改】路径一走完，马上结束！
+        # 允许最多多停留 5 步缓冲一下
         if self.path_index >= len(self.path_points) + 5:
             return 0.0  # Success
 
@@ -280,7 +240,6 @@ class AuboScanTask(base.Task):
         qpos = physics.data.qpos[:].astype(np.float32)
         qvel = physics.data.qvel[:].astype(np.float32)
 
-        # 【防御】防止 NaN 进入神经网络
         if np.isnan(qpos).any(): qpos[:] = 0.0
         if np.isnan(qvel).any(): qvel[:] = 0.0
 
@@ -288,8 +247,8 @@ class AuboScanTask(base.Task):
         obs['qvel'] = qvel
 
         try:
-            if 'wrist3_Link' in physics.named.data.site_xpos:
-                ee_pos = physics.named.data.site_xpos['wrist3_Link']
+            if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
+                ee_pos = physics.named.data.xpos['wrist3_Link']
             else:
                 ee_pos = physics.data.xpos[-1]
         except:
@@ -313,25 +272,29 @@ class AuboScanTask(base.Task):
 
     def _generate_mock_path_pattern(self):
         points = []
-        start_z = self._random_state.uniform(0.0, 0.6)
+        start_z = self._random_state.uniform(0.1, 0.6)
         center_x = self._random_state.uniform(0.3, 0.6)
         center_y = self._random_state.uniform(-0.3, 0.3)
-        radius = 0.15
-        for theta in np.linspace(0, 2 * np.pi, 60):
+        radius = self._random_state.uniform(0.1, 0.2)
+
+        # 【修改】增加采样点数量 (100 -> 200)，让路径更长，动作更慢
+        num_points = 200
+
+        for theta in np.linspace(0, 2 * np.pi, num_points):
             x = center_x + radius * np.cos(theta)
             y = center_y + radius * np.sin(theta)
-            z = start_z + 0.05 * np.sin(theta * 2)
+            z = start_z + 0.05 * np.sin(theta * 3)
             rot = [3.14, 0, 0]
             points.append(np.concatenate([[x, y, z], rot]))
         return points
 
 
 def load_env():
-    xml_path = "mjcf/aubo_i5_withdetector.xml"
+    xml_path = "aubo_i5_withdetector.xml"
     if not os.path.exists(xml_path):
         xml_path = os.path.join("mjcf", "aubo_i5_withdetector.xml")
     if not os.path.exists(xml_path):
-        xml_path = "mjcf/aubo_i5_withdetector.xml"
+        xml_path = "aubo_i5_withdetector.xml"
 
     task = AuboScanTask(xml_path)
 
