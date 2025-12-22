@@ -65,7 +65,7 @@ class DMControlWrapper(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def render(self):
-        return self.env.physics.render(camera_id=0, height=480, width=640)
+        return self.env.physics.render(camera_id=-1, height=480, width=640)
 
 
 def make_env_fn(rank, seed=0):
