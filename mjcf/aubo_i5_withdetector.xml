@@ -72,10 +72,10 @@
                 <geom name="wrist3_collision" pos="0 0 0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="wrist3_Link" class="collision" />
                 <site name="ee_site" pos="0 0.1 0" quat="-1 1 0 0"/>
                 <body name="connector_body" pos="0.0631 0.0322 0.0365" euler="0 0 0">
-                      <geom type="mesh" mesh="connector_mesh" material="metallic_black" class="visual"/>
+                      <geom type="mesh" mesh="connector_mesh" material="metallic_black" class="collision"/>
                       <geom type="mesh" mesh="connector_mesh" class="collision"/>
                       <body name="detector_body" pos="-0.1031 0.008 0.06" euler="0 0 0">
-                          <geom type="mesh" mesh="detector_mesh" material="metallic_black" class="visual"/>
+                          <geom type="mesh" mesh="detector_mesh" material="metallic_black" class="collision"/>
                           <geom type="mesh" mesh="detector_mesh" class="collision"/>
                           <camera name="ee_camera" pos="0.04 0.0268 0" euler="3.14 0 0" fovy="60"/>
                       </body>
