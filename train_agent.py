@@ -1,12 +1,13 @@
 import numpy as np
 import os
+import torch
 import gymnasium as gym
 from gymnasium import spaces
 
 # SB3 核心组件
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
-from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 # 引入环境加载函数
@@ -16,11 +17,9 @@ from dm_rl_env import load_env
 class DMControlWrapper(gym.Env):
     """
     将 dm_control 环境包装为 gymnasium 环境。
-    支持传入实例，也支持内部自动加载。
     """
 
     def __init__(self, dm_env_instance=None):
-        # 如果没有传入实例，则现场创建一个 (用于多进程生成)
         if dm_env_instance is None:
             self.env = load_env()
         else:
@@ -38,7 +37,6 @@ class DMControlWrapper(gym.Env):
 
         # 2. 观测空间转换
         obs_spec = self.env.observation_spec()
-        # 计算展平后的维度
         dim = sum(np.prod(v.shape) for v in obs_spec.values())
 
         self.observation_space = spaces.Box(
@@ -54,7 +52,6 @@ class DMControlWrapper(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        # dm_control 内部管理随机性，这里重置环境
         time_step = self.env.reset()
         return self._flatten_obs(time_step.observation), {}
 
@@ -72,74 +69,83 @@ class DMControlWrapper(gym.Env):
 
 
 def make_env_fn(rank, seed=0):
-    """
-    工厂函数：返回一个'创建环境的函数' (_init)，而不是直接返回环境。
-    这是 SubprocVecEnv 要求的格式。
-    """
+    """工厂函数"""
 
     def _init():
-        # 1. 在子进程中创建全新的环境实例 (避免 Pickle 问题)
         env = DMControlWrapper()
-
-        # 2. 添加 Monitor 包装器 (关键！记录 Reward)
         env = Monitor(env)
-
-        # 3. 设置随机种子 (确保每个进程的随机性不同)
         env.reset(seed=seed + rank)
         return env
 
     return _init
 
 
-# ----------------------------------------------------------------
-# 主训练流程
-# ----------------------------------------------------------------
 if __name__ == "__main__":
 
-    # === 并行配置 ===
-    # 自动获取 CPU 核心数，或者手动指定 (推荐 4-8 核，太多可能会爆内存)
-    num_cpu = os.cpu_count() - 8
-    print(f"检测到 {num_cpu} 个 CPU 核心，准备启动并行训练...")
+    # === 1. 并行核心数优化 ===
+    # 不占满所有核心，留4个给系统和梯度计算，否则会卡顿
+    max_cores = os.cpu_count() or 4
+    num_cpu = max(1, max_cores - 4)
 
-    # === 创建并行环境 (Vectorized Environment) ===
-    # 【修复点】不再使用 make_vec_env，而是直接构造函数列表传给 SubprocVecEnv
-    # 这样我们可以显式地将 rank (i) 传进去
+    print(f"物理核心: {max_cores}, 实际使用并行环境数: {num_cpu}")
+
+    # === 2. 创建并行环境 ===
     env_fns = [make_env_fn(i, seed=42) for i in range(num_cpu)]
 
-    # SubprocVecEnv 会为列表中的每个函数启动一个进程
+    # start_method='fork' 在 Linux 下更快，但 'spawn' 更稳定
+    # 如果遇到奇怪的死锁，可以去掉 start_method 参数让其使用默认
     env = SubprocVecEnv(env_fns)
 
     print("并行环境初始化完成。")
 
-    # === 配置 PPO 算法 ===
+    # === 3. PPO 参数深度优化 (针对并行提速) ===
+    # 逻辑:
+    # n_steps * num_cpu = 每次更新前的总采样数 (Buffer Size)
+    # 之前是 2048 * 16 = 32768，太大了，导致更新间隔极长
+    # 现在改为 256 * 14 ≈ 3584，更新频率会快很多
+
+    n_steps = 256
+    batch_size = 512  # 增大 batch size 利用矩阵计算加速
+
+    # 如果有 GPU，务必使用 GPU 进行梯度更新 (Learner)，CPU 只负责采样 (Worker)
+    # 如果没有 GPU，这行会自动回退到 CPU
+    # device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu"
+    print(f"训练设备: {device} (Learner)")
+
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
+
+        # --- 速度优化参数 ---
         learning_rate=3e-4,
-        n_steps=2048,  # 每个环境采样多少步才更新
-        batch_size=256,  # 增大 batch_size
+        n_steps=n_steps,  # 减小这个值，让 log 刷得快一点
+        batch_size=batch_size,  # 增大这个值，加速网络更新
+        n_epochs=10,  # 每次更新复用数据的次数
+
+        # --- 稳定性参数 ---
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
-        device="cpu"  # 强制 CPU，避免 GPU 显存溢出和 CUDA 初始化冲突
+        ent_coef=0.01,  # 稍微增加探索熵，防止过早收敛
+
+        device=device  # 尽量用 GPU 训练网络
     )
 
-    # === 设置检查点保存 ===
+    # === 4. 检查点 ===
     checkpoint_callback = CheckpointCallback(
-        save_freq=max(20000 // num_cpu, 1),  # 根据并行数调整保存频率
+        save_freq=max(20000 // num_cpu, 1),
         save_path='./logs/',
         name_prefix='aubo_scan_rl'
     )
 
-    print(f"开始在 {num_cpu} 个环境中并行训练...")
+    print(f"开始训练... 每轮收集数据量: {n_steps * num_cpu}")
     try:
-        # total_timesteps 是所有环境步数的总和
-        model.learn(total_timesteps=2000000, callback=checkpoint_callback)
+        model.learn(total_timesteps=3000000, callback=checkpoint_callback)
     except KeyboardInterrupt:
         print("训练被用户中断。正在保存当前模型...")
     finally:
-        # 关闭所有子进程，释放资源
         env.close()
 
     model.save("aubo_scan_final_policy")
