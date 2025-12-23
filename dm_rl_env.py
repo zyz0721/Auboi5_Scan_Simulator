@@ -21,9 +21,9 @@ CONTROL_TIMESTEP = 0.02  # 50Hz
 PHYSICS_TIMESTEP = 0.002  # 500Hz
 
 # --- 配置参数 ---
-MIN_HEIGHT_LIMIT = 0.05  # 最小高度限制
-COLLISION_PENALTY = -10.0  # 碰撞惩罚
-NAN_PENALTY = -50.0  # NaN惩罚
+MIN_HEIGHT_LIMIT = 0.2  # 最小高度限制
+COLLISION_PENALTY = -100.0  # 碰撞惩罚
+NAN_PENALTY = -500.0  # NaN惩罚
 COLLISION_TERMINATE = True  # 撞了就停
 
 
@@ -123,7 +123,7 @@ class AuboScanTask(base.Task):
         start_pose_6d = self.path_points[0]
         start_matrix = self._pose_to_matrix(start_pose_6d)
 
-        q_guess = [0, -0.2, -1.5, 0.3, 1.57, 0]
+        q_guess = [0, 0, 0, 0, 0, 0]
         q_start, _ = self._safe_ik(start_matrix, q_guess)
 
         if q_start is None:
@@ -140,7 +140,7 @@ class AuboScanTask(base.Task):
     def _filter_valid_path(self, physics, raw_path):
         valid_points = []
         qpos_backup = physics.data.qpos.copy()
-        last_q = [0, -0.2, -1.5, 0.3, 1.57, 0]
+        last_q = [0, 0, 0, 0, 0, 0]
 
         for pose_6d in raw_path:
             mat = self._pose_to_matrix(pose_6d)
@@ -215,9 +215,9 @@ class AuboScanTask(base.Task):
         target_pos = self._current_base_target[:3]
         dist = np.linalg.norm(target_pos - ee_pos)
 
-        # 【增强奖励】加大对精度的奖励权重，鼓励消除那2cm误差
+        # 【增强奖励】加大对精度的奖励权重，鼓励消除那0.1cm误差
         # 如果距离 < 2cm，这个 exp 值会迅速接近 3.0
-        reward_dist = 3.0 * np.exp(-15 * dist)
+        reward_dist = 1.5 * np.exp(-1000 * dist)
 
         return reward_dist
 

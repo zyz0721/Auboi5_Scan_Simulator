@@ -75,7 +75,7 @@ if __name__ == "__main__":
     # === 优化并行数 ===
     max_cores = os.cpu_count() or 4
     # IK 计算非常消耗 CPU，为了稳定性，请只使用 60-70% 的核心
-    num_cpu = max(1, int(max_cores * 0.7))
+    num_cpu = max(1, int(max_cores * 0.85))
     print(f"物理核心: {max_cores}, 正在使用 {num_cpu} 个并行环境...")
 
     env_fns = [make_env_fn(i, seed=100) for i in range(num_cpu)]
@@ -109,7 +109,7 @@ if __name__ == "__main__":
 
     print("开始避障增强训练...")
     try:
-        model.learn(total_timesteps=3000000, callback=checkpoint_callback)
+        model.learn(total_timesteps=5000000, callback=checkpoint_callback)
     except KeyboardInterrupt:
         print("手动停止训练，正在保存...")
     finally:
