@@ -217,7 +217,7 @@ class AuboScanTask(base.Task):
 
         # 【增强奖励】加大对精度的奖励权重，鼓励消除那0.1cm误差
         # 如果距离 < 2cm，这个 exp 值会迅速接近 3.0
-        reward_dist = 2.0 * np.exp(-2000 * dist)
+        reward_dist = 5.0 * np.exp(-2000 * dist)
 
         return reward_dist
 
