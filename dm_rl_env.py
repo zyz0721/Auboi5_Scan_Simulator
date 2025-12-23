@@ -22,8 +22,8 @@ PHYSICS_TIMESTEP = 0.002  # 500Hz
 
 # --- 配置参数 ---
 MIN_HEIGHT_LIMIT = 0.2  # 最小高度限制
-COLLISION_PENALTY = -100.0  # 碰撞惩罚
-NAN_PENALTY = -500.0  # NaN惩罚
+COLLISION_PENALTY = -500.0  # 碰撞惩罚
+NAN_PENALTY = -1000.0  # NaN惩罚
 COLLISION_TERMINATE = True  # 撞了就停
 
 
@@ -217,7 +217,7 @@ class AuboScanTask(base.Task):
 
         # 【增强奖励】加大对精度的奖励权重，鼓励消除那0.1cm误差
         # 如果距离 < 2cm，这个 exp 值会迅速接近 3.0
-        reward_dist = 1.5 * np.exp(-1000 * dist)
+        reward_dist = 2.0 * np.exp(-2000 * dist)
 
         return reward_dist
 

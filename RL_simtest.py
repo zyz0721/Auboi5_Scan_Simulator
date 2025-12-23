@@ -147,7 +147,7 @@ def main():
             if dist_err == -1.0:
                 err_str = "NaN(计算错误)"
             else:
-                err_str = f"{dist_err * 100:.1f}cm"
+                err_str = f"{dist_err * 1000:.2f}mm"
 
             print(f"Step: {step_count:04d} | 奖励: {reward:.2f} | 误差: {err_str} | 状态: {status}")
 
@@ -157,7 +157,7 @@ def main():
             bgr_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
 
             dist_err = info.get('dist_error', 0.0)
-            err_disp = f"{dist_err * 100:.1f}cm" if dist_err != -1.0 else "Error"
+            err_disp = f"{dist_err * 1000:.2f}mm" if dist_err != -1.0 else "Error"
 
             cv2.putText(bgr_array, f"Error: {err_disp}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
