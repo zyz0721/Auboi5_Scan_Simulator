@@ -6,7 +6,7 @@ from dm_control.rl import control
 from dm_control.suite import base
 from scipy.spatial.transform import Rotation as R
 
-print(">>> Safe-IK Environment (Position + Orientation) Loaded <<<")
+print(">>> Safe-IK Environment (Comfort Zone Optimized) Loaded <<<")
 
 try:
     from curve_utils import CurvePathPlanner
@@ -20,7 +20,7 @@ CONTROL_TIMESTEP = 0.02  # 50Hz
 PHYSICS_TIMESTEP = 0.002  # 500Hz
 
 # --- 配置参数 ---
-MIN_HEIGHT_LIMIT = 0.05
+MIN_HEIGHT_LIMIT = 0.2
 COLLISION_PENALTY = -500.0
 NAN_PENALTY = -1000.0
 COLLISION_TERMINATE = True
@@ -32,6 +32,7 @@ class AuboScanTask(base.Task):
         self._random_state = self._random
 
         self.curve_manager = CurvePathPlanner()
+        # 锁定 wrist3_Link
         self.ik_solver = Kinematics("wrist3_Link")
         self.ik_solver.buildFromMJCF(xml_path)
 
@@ -96,12 +97,25 @@ class AuboScanTask(base.Task):
 
         return True, "valid"
 
+    def _is_joint_in_comfort_zone(self, qpos):
+        """
+        【新增】检查关节角是否在舒适区内。
+        Aubo i5 的极限通常是 +/- 3.04 (约174度)。
+        如果某个关节到了 2.9，说明已经很极限了，容易出问题。
+        """
+        # 设置一个稍微保守的阈值 (比如极限的 90%)
+        limit_threshold = 2.8  # 约 160度
+
+        if np.any(np.abs(qpos) > limit_threshold):
+            return False  # 关节太极限了，不要这个点
+        return True
+
     def initialize_episode(self, physics):
         self._randomize_physics(physics)
         self.collision_count = 0
 
         valid_path = []
-        for _ in range(5):
+        for _ in range(10):  # 多尝试几次，确保找到好路径
             raw_path = self._generate_mock_path_pattern()
             valid_path = self._filter_valid_path(physics, raw_path)
             if len(valid_path) > 20:
@@ -141,12 +155,23 @@ class AuboScanTask(base.Task):
             q_sol, _ = self._safe_ik(mat, last_q)
 
             if q_sol is not None:
+                # 【新增】除了检查碰撞，还要检查关节是否舒适
+                if not self._is_joint_in_comfort_zone(q_sol):
+                    # 如果关节太极限，视为无效点，直接跳过
+                    # (这会截断路径，保留之前有效的部分)
+                    break
+
                 physics.data.qpos[:] = q_sol
                 physics.forward()
                 is_valid, reason = self._check_collision_and_height(physics)
+
                 if is_valid:
                     valid_points.append(pose_6d)
                     last_q = q_sol
+                else:
+                    break  # 遇到障碍也截断
+            else:
+                break  # IK无解也截断
 
         physics.data.qpos[:] = qpos_backup
         physics.forward()
@@ -193,7 +218,6 @@ class AuboScanTask(base.Task):
         if reason == "physics_nan": return NAN_PENALTY
         if not is_safe: return COLLISION_PENALTY
 
-        # --- 1. 获取当前末端状态 ---
         try:
             if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
                 ee_pos = physics.named.data.xpos['wrist3_Link']
@@ -205,38 +229,22 @@ class AuboScanTask(base.Task):
             ee_pos = physics.data.xpos[-1]
             ee_mat = physics.data.xmat[-1].reshape(3, 3)
 
-        # --- 2. 获取目标状态 ---
         target_pos = self._current_base_target[:3]
         target_euler = self._current_base_target[3:]
         target_rot = R.from_euler('xyz', target_euler, degrees=False)
         target_mat = target_rot.as_matrix()
 
-        # --- 3. 计算位置误差 ---
         dist = np.linalg.norm(target_pos - ee_pos)
 
-        # --- 4. 计算姿态误差 (Rotation Error) ---
-        # 计算旋转差矩阵 R_diff = R_current * R_target.T
-        # 然后计算 trace(R_diff) 来估算角度差
-        # trace = 1 + 2cos(theta), 所以 theta = arccos((trace-1)/2)
         r_diff = np.dot(ee_mat, target_mat.T)
         trace = np.trace(r_diff)
-        # 限制数值范围防止 NaN
         trace = np.clip(trace, -1.0, 3.0)
-        # 角度误差 (弧度)
         angle_error = np.arccos(np.clip((trace - 1) / 2, -1.0, 1.0))
 
-        # --- 5. 综合奖励 ---
-        # 距离奖励: 3.0 * exp(-15 * dist)
         reward_pos = 2.0 * np.exp(-2000 * dist)
+        reward_rot = 2.0 * np.exp(-100 * angle_error)
 
-        # 角度奖励: 1.0 * exp(-5 * angle)
-        # 如果角度偏差 > 10度 (0.17弧度)，分数会明显下降
-        reward_rot = 2.0 * np.exp(-50.0 * angle_error)
-
-        # 组合方式：相乘或相加
-        # 乘法意味着：如果姿态不对，位置再准也没分；反之亦然。这比加法更严格。
         total_reward = reward_pos * reward_rot
-
         return total_reward
 
     def get_termination(self, physics):
@@ -265,25 +273,29 @@ class AuboScanTask(base.Task):
         try:
             if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
                 ee_pos = physics.named.data.xpos['wrist3_Link']
+                ee_mat = physics.named.data.xmat['wrist3_Link'].reshape(3, 3)
             else:
                 ee_pos = physics.data.xpos[-1]
+                ee_mat = np.eye(3)
         except:
             ee_pos = np.zeros(3)
+            ee_mat = np.eye(3)
 
         if np.isnan(ee_pos).any(): ee_pos[:] = 0.0
         obs['ee_pos'] = ee_pos.astype(np.float32)
 
         if self._current_base_target is not None:
-            # 目标位置误差
             target_pos = self._current_base_target[:3]
             pos_error = (target_pos - ee_pos).astype(np.float32)
 
-            # 【新增】将姿态误差也加入观测，让神经网络知道自己歪了没有
-            # 这里简单传目标欧拉角和当前末端姿态的差值可能不够准，
-            # 更稳妥的是把目标欧拉角也放进去，让网络自己学
-            target_euler = self._current_base_target[3:].astype(np.float32)
+            target_euler = self._current_base_target[3:]
+            current_rot = R.from_matrix(ee_mat)
+            current_euler = current_rot.as_euler('xyz', degrees=False)
 
-            obs['tracking_error'] = np.concatenate([pos_error, target_euler])
+            rot_error = target_euler - current_euler
+            rot_error = (rot_error + np.pi) % (2 * np.pi) - np.pi
+
+            obs['tracking_error'] = np.concatenate([pos_error, rot_error]).astype(np.float32)
         else:
             obs['tracking_error'] = np.zeros(6, dtype=np.float32)
 
@@ -296,18 +308,23 @@ class AuboScanTask(base.Task):
 
     def _generate_mock_path_pattern(self):
         points = []
-        start_z = self._random_state.uniform(0.1, 0.6)
-        center_x = self._random_state.uniform(0.3, 0.6)
-        center_y = self._random_state.uniform(-0.3, 0.3)
-        radius = self._random_state.uniform(0.1, 0.2)
+
+        # 【优化】缩小随机生成范围，避免生成到工作空间边缘
+        # 之前的 radius 最大 0.2，center_x 最大 0.6 => 最远 0.8 (接近极限)
+        # 现在稍微收缩一点
+        start_z = self._random_state.uniform(0.2, 0.5)  # 提高最低高度
+        center_x = self._random_state.uniform(0.3, 0.55)  # 稍微减小最大 X
+        center_y = self._random_state.uniform(-0.25, 0.25)
+        radius = self._random_state.uniform(0.1, 0.15)  # 稍微减小半径
 
         num_points = 200
 
         for theta in np.linspace(0, 2 * np.pi, num_points):
             x = center_x + radius * np.cos(theta)
             y = center_y + radius * np.sin(theta)
-            z = start_z + 0.05 * np.sin(theta * 3)
-            rot = [3.14, 0, 0]  # 这里固定朝下，您可以改成动态变化的姿态
+            # 让Z轴波动也平缓一点
+            z = start_z + 0.03 * np.sin(theta * 3)
+            rot = [3.14, 0, 0]
             points.append(np.concatenate([[x, y, z], rot]))
         return points
 
