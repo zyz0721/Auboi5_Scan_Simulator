@@ -5,6 +5,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from dm_rl_env import load_env
+from scipy.spatial.transform import Rotation as R
 
 # 尝试导入 OpenCV 用于显示画面
 try:
@@ -56,31 +57,50 @@ class DMControlWrapper(gym.Env):
         if reward < -5.0:
             info['collision'] = True
 
-        # --- 修复后的误差计算逻辑 ---
+        # --- 计算详细误差 (位置 + 角度) ---
         try:
             physics = self.env.physics
 
-            # 【修复点】优先尝试获取 wrist3_Link 的位置
+            # 1. 获取 wrist3_Link 的位置(pos)和旋转矩阵(mat)
             if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
                 ee_pos = physics.named.data.xpos['wrist3_Link']
-            elif 'ee_site' in physics.named.data.site_xpos.axes.row.names:
-                ee_pos = physics.named.data.site_xpos['ee_site']
+                ee_mat = physics.named.data.xmat['wrist3_Link'].reshape(3, 3)
             else:
-                # 最后的保底：取最后一个 body 的位置
                 ee_pos = physics.data.xpos[-1]
+                ee_mat = physics.data.xmat[-1].reshape(3, 3)
 
-            # 获取目标点
-            if self.env.task._current_base_target is not None:
-                target = self.env.task._current_base_target[:3]
-                dist = np.linalg.norm(target - ee_pos)
+            # 2. 获取当前目标
+            task = self.env.task
+            if task._current_base_target is not None:
+                target_pos = task._current_base_target[:3]
+                target_euler = task._current_base_target[3:]
+
+                # 计算位置误差 (Euclidean Distance)
+                dist = np.linalg.norm(target_pos - ee_pos)
                 info['dist_error'] = dist
+
+                # 计算角度误差 (Geodesic Distance on SO3)
+                # 目标旋转矩阵
+                target_rot = R.from_euler('xyz', target_euler, degrees=False)
+                target_mat = target_rot.as_matrix()
+
+                # 计算旋转差: R_diff = R_curr * R_target^T
+                # Trace(R_diff) = 1 + 2cos(theta)
+                r_diff = np.dot(ee_mat, target_mat.T)
+                trace = np.trace(r_diff)
+                trace = np.clip(trace, -1.0, 3.0)  # 防止数值误差越界
+                angle_rad = np.arccos(np.clip((trace - 1) / 2, -1.0, 1.0))
+                angle_deg = np.degrees(angle_rad)
+
+                info['ang_error'] = angle_deg
             else:
-                info['dist_error'] = 9.99  # 还没开始动
+                info['dist_error'] = 0.0
+                info['ang_error'] = 0.0
 
         except Exception as e:
-            # 如果还报错，打印出来看看到底是啥问题
-            print(f"[Debug Error] 计算误差失败: {e}")
-            info['dist_error'] = -1.0  # 用 -1 表示计算出错
+            # print(f"[Debug] Calc Error: {e}")
+            info['dist_error'] = -1.0
+            info['ang_error'] = -1.0
 
         return obs, reward, terminated, truncated, info
 
@@ -102,68 +122,67 @@ def main():
         print("❌ 错误: 找不到模型文件。请先运行 train_agent.py 进行训练！")
         return
 
-    print(f"正在加载模型: {model_path}...")
+    print(f"✅ 正在加载模型: {model_path}...")
 
-    # 2. 加载环境
     print("⏳ 正在初始化仿真环境...")
     dm_env = load_env()
     env = DMControlWrapper(dm_env)
 
-    # 3. 加载模型
     try:
         model = PPO.load(model_path, device='cpu')
     except Exception as e:
         print(f"❌ 模型加载失败: {e}")
         return
 
-    # 4. 开始循环
     obs, _ = env.reset()
-    print("\n" + "=" * 50)
-    print("🎮 演示开始！")
+    print("\n" + "=" * 60)
+    print("🎮 演示开始！(位置 + 角度误差实时监控)")
     print("   按 'q' 键退出")
-    print("=" * 50 + "\n")
+    print("=" * 60 + "\n")
 
     step_count = 0
     total_reward = 0
 
     while True:
-        # A. 预测动作
         action, _ = model.predict(obs, deterministic=True)
-
-        # B. 执行动作
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
         step_count += 1
 
-        # C. 打印实时数据
+        # --- 控制台打印 ---
         if step_count % 10 == 0:
             dist_err = info.get('dist_error', 0.0)
+            ang_err = info.get('ang_error', 0.0)
 
-            status = "🟢 正常"
-            if info.get('collision'):
-                status = "🔴 碰撞/违规!"
+            status = "🟢"
+            if info.get('collision'): status = "🔴 碰撞!"
 
-            # 格式化输出
             if dist_err == -1.0:
-                err_str = "NaN(计算错误)"
+                d_str, a_str = "Error", "Error"
             else:
-                err_str = f"{dist_err * 1000:.2f}mm"
+                d_str = f"{dist_err * 1000:5.2f}mm"
+                a_str = f"{ang_err:5.2f}°"
 
-            print(f"Step: {step_count:04d} | 奖励: {reward:.2f} | 误差: {err_str} | 状态: {status}")
+            print(f"Step: {step_count:04d} | R: {reward:5.2f} | 距离误差: {d_str} | 角度误差: {a_str} | {status}")
 
-        # D. 渲染画面
+        # --- 画面显示 ---
         if HAS_CV2:
             rgb_array = env.render()
             bgr_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
 
             dist_err = info.get('dist_error', 0.0)
-            err_disp = f"{dist_err * 1000:.2f}mm" if dist_err != -1.0 else "Error"
+            ang_err = info.get('ang_error', 0.0)
 
-            cv2.putText(bgr_array, f"Error: {err_disp}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            if dist_err != -1.0:
+                # 位置误差 (绿色)
+                cv2.putText(bgr_array, f"Pos Err: {dist_err * 1000:.2f} mm", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # 角度误差 (黄色)
+                cv2.putText(bgr_array, f"Ang Err: {ang_err:.1f} deg", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             if info.get('collision'):
-                cv2.putText(bgr_array, "COLLISION!", (10, 70),
+                cv2.putText(bgr_array, "COLLISION!", (10, 100),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
             cv2.imshow("Aubo RL Test", bgr_array)
@@ -171,9 +190,8 @@ def main():
             if cv2.waitKey(20) & 0xFF == ord('q'):
                 break
 
-        # E. 回合结束重置
         if terminated or truncated:
-            print(f"\n 回合结束! 总奖励: {total_reward:.2f}")
+            print(f"\n🔔 回合结束! 总奖励: {total_reward:.2f}")
             obs, _ = env.reset()
             step_count = 0
             total_reward = 0

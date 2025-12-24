@@ -6,9 +6,8 @@ from dm_control.rl import control
 from dm_control.suite import base
 from scipy.spatial.transform import Rotation as R
 
-print(">>> Safe-IK Environment (Auto-Terminate Version) Loaded <<<")
+print(">>> Safe-IK Environment (Position + Orientation) Loaded <<<")
 
-# 引入你的自定义工具
 try:
     from curve_utils import CurvePathPlanner
     from casadi_ik import Kinematics
@@ -21,10 +20,10 @@ CONTROL_TIMESTEP = 0.02  # 50Hz
 PHYSICS_TIMESTEP = 0.002  # 500Hz
 
 # --- 配置参数 ---
-MIN_HEIGHT_LIMIT = 0.2  # 最小高度限制
-COLLISION_PENALTY = -500.0  # 碰撞惩罚
-NAN_PENALTY = -1000.0  # NaN惩罚
-COLLISION_TERMINATE = True  # 撞了就停
+MIN_HEIGHT_LIMIT = 0.05
+COLLISION_PENALTY = -500.0
+NAN_PENALTY = -1000.0
+COLLISION_TERMINATE = True
 
 
 class AuboScanTask(base.Task):
@@ -33,8 +32,6 @@ class AuboScanTask(base.Task):
         self._random_state = self._random
 
         self.curve_manager = CurvePathPlanner()
-
-        # IK 求解器初始化 (针对 wrist3_Link)
         self.ik_solver = Kinematics("wrist3_Link")
         self.ik_solver.buildFromMJCF(xml_path)
 
@@ -76,7 +73,6 @@ class AuboScanTask(base.Task):
             return False, "physics_nan"
 
         try:
-            # 尝试获取 wrist3_Link 高度，如果不行则获取 detector_body
             if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
                 z_val = physics.named.data.xpos['wrist3_Link'][2]
             else:
@@ -108,7 +104,6 @@ class AuboScanTask(base.Task):
         for _ in range(5):
             raw_path = self._generate_mock_path_pattern()
             valid_path = self._filter_valid_path(physics, raw_path)
-            # 路径稍微长一点才采纳
             if len(valid_path) > 20:
                 break
 
@@ -119,7 +114,6 @@ class AuboScanTask(base.Task):
         self.path_points = valid_path
         self.path_index = 0
 
-        # 初始化位置
         start_pose_6d = self.path_points[0]
         start_matrix = self._pose_to_matrix(start_pose_6d)
 
@@ -162,14 +156,11 @@ class AuboScanTask(base.Task):
         if np.isnan(physics.data.qpos).any():
             return
 
-        # 更新目标点
         if self.path_index < len(self.path_points):
             base_pose_target_6d = self.path_points[self.path_index]
             self.path_index += 1
         else:
-            # 保持最后一个点
             base_pose_target_6d = self.path_points[-1]
-            # 注意：这里的 path_index 还会继续增加，用于 get_termination 判断
 
         self._current_base_target = base_pose_target_6d
 
@@ -180,7 +171,6 @@ class AuboScanTask(base.Task):
 
         if q_base is None: q_base = q_guess
 
-        # 叠加动作
         residual_pos = action[:3] * self.action_scale
         target_pose_with_residual = base_pose_target_6d.copy()
         target_pose_with_residual[:3] += residual_pos
@@ -203,34 +193,60 @@ class AuboScanTask(base.Task):
         if reason == "physics_nan": return NAN_PENALTY
         if not is_safe: return COLLISION_PENALTY
 
+        # --- 1. 获取当前末端状态 ---
         try:
-            # 优先使用 wrist3_Link
             if 'wrist3_Link' in physics.named.data.xpos.axes.row.names:
                 ee_pos = physics.named.data.xpos['wrist3_Link']
+                ee_mat = physics.named.data.xmat['wrist3_Link'].reshape(3, 3)
             else:
                 ee_pos = physics.data.xpos[-1]
+                ee_mat = physics.data.xmat[-1].reshape(3, 3)
         except:
             ee_pos = physics.data.xpos[-1]
+            ee_mat = physics.data.xmat[-1].reshape(3, 3)
 
+        # --- 2. 获取目标状态 ---
         target_pos = self._current_base_target[:3]
+        target_euler = self._current_base_target[3:]
+        target_rot = R.from_euler('xyz', target_euler, degrees=False)
+        target_mat = target_rot.as_matrix()
+
+        # --- 3. 计算位置误差 ---
         dist = np.linalg.norm(target_pos - ee_pos)
 
-        # 【增强奖励】加大对精度的奖励权重，鼓励消除那0.1cm误差
-        # 如果距离 < 2cm，这个 exp 值会迅速接近 3.0
-        reward_dist = 5.0 * np.exp(-2000 * dist)
+        # --- 4. 计算姿态误差 (Rotation Error) ---
+        # 计算旋转差矩阵 R_diff = R_current * R_target.T
+        # 然后计算 trace(R_diff) 来估算角度差
+        # trace = 1 + 2cos(theta), 所以 theta = arccos((trace-1)/2)
+        r_diff = np.dot(ee_mat, target_mat.T)
+        trace = np.trace(r_diff)
+        # 限制数值范围防止 NaN
+        trace = np.clip(trace, -1.0, 3.0)
+        # 角度误差 (弧度)
+        angle_error = np.arccos(np.clip((trace - 1) / 2, -1.0, 1.0))
 
-        return reward_dist
+        # --- 5. 综合奖励 ---
+        # 距离奖励: 3.0 * exp(-15 * dist)
+        reward_pos = 2.0 * np.exp(-2000 * dist)
+
+        # 角度奖励: 1.0 * exp(-5 * angle)
+        # 如果角度偏差 > 10度 (0.17弧度)，分数会明显下降
+        reward_rot = 2.0 * np.exp(-50.0 * angle_error)
+
+        # 组合方式：相乘或相加
+        # 乘法意味着：如果姿态不对，位置再准也没分；反之亦然。这比加法更严格。
+        total_reward = reward_pos * reward_rot
+
+        return total_reward
 
     def get_termination(self, physics):
         is_safe, reason = self._check_collision_and_height(physics)
 
         if reason == "physics_nan" or (not is_safe and COLLISION_TERMINATE):
-            return 1.0  # Failure
+            return 1.0
 
-        # 【关键修改】路径一走完，马上结束！
-        # 允许最多多停留 5 步缓冲一下
         if self.path_index >= len(self.path_points) + 5:
-            return 0.0  # Success
+            return 0.0
 
         return None
 
@@ -258,10 +274,18 @@ class AuboScanTask(base.Task):
         obs['ee_pos'] = ee_pos.astype(np.float32)
 
         if self._current_base_target is not None:
+            # 目标位置误差
             target_pos = self._current_base_target[:3]
-            obs['tracking_error'] = (target_pos - ee_pos).astype(np.float32)
+            pos_error = (target_pos - ee_pos).astype(np.float32)
+
+            # 【新增】将姿态误差也加入观测，让神经网络知道自己歪了没有
+            # 这里简单传目标欧拉角和当前末端姿态的差值可能不够准，
+            # 更稳妥的是把目标欧拉角也放进去，让网络自己学
+            target_euler = self._current_base_target[3:].astype(np.float32)
+
+            obs['tracking_error'] = np.concatenate([pos_error, target_euler])
         else:
-            obs['tracking_error'] = np.zeros(3, dtype=np.float32)
+            obs['tracking_error'] = np.zeros(6, dtype=np.float32)
 
         return obs
 
@@ -277,14 +301,13 @@ class AuboScanTask(base.Task):
         center_y = self._random_state.uniform(-0.3, 0.3)
         radius = self._random_state.uniform(0.1, 0.2)
 
-        # 【修改】增加采样点数量 (100 -> 200)，让路径更长，动作更慢
         num_points = 200
 
         for theta in np.linspace(0, 2 * np.pi, num_points):
             x = center_x + radius * np.cos(theta)
             y = center_y + radius * np.sin(theta)
             z = start_z + 0.05 * np.sin(theta * 3)
-            rot = [3.14, 0, 0]
+            rot = [3.14, 0, 0]  # 这里固定朝下，您可以改成动态变化的姿态
             points.append(np.concatenate([[x, y, z], rot]))
         return points
 
