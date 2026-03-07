@@ -3,12 +3,12 @@ import numpy as np
 import os
 import math
 
-INPUT_FILE = 'models/side_holder.stl'
-OUTPUT_FILE = 'models/side_holder_output.stl'
+INPUT_FILE = 'models/pallet.obj'
+OUTPUT_FILE = 'models/pallet_output.obj'
 
 # 1. 缩放因子
 # 0.001 表示将毫米转换为米 (1/1000)，1.0 表示不缩放
-SCALE_FACTOR = 0.001
+SCALE_FACTOR = 0.25
 
 # 2. 旋转角度 (单位：度)
 # Roll  (翻滚): 绕 X 轴旋转
