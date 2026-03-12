@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         self.le_radius = QLineEdit("100.0")
         self.le_cx = QLineEdit("0.0")
         self.le_cy = QLineEdit("0.0")
+        self.le_max_angle = QLineEdit("60.0")  # 默认最大倾角为 45度
         form_path.addRow("扫描步长 (mm):", self.le_step)
         form_path.addRow("最大半径 (mm):", self.le_radius)
         form_path.addRow("中心 X (mm):", self.le_cx)
@@ -227,20 +228,33 @@ class MainWindow(QMainWindow):
             radius = float(self.le_radius.text())
             cx = float(self.le_cx.text())
             cy = float(self.le_cy.text())
+            max_angle = float(self.le_max_angle.text())  # 读取设置的角度
         except ValueError:
             QMessageBox.warning(self, "错误", "参数输入必须为数字")
             return
 
-        # 调用 curve_utils 进行路径生成
-        # 这里默认调用螺旋，您可以根据需要完善 zigzag 的逻辑对接
+        # # 调用 curve_utils 进行路径生成
+        # # 这里默认调用螺旋，您可以根据需要完善 zigzag 的逻辑对接
+        # if self.rb_spiral.isChecked():
+        #     pts, norms = curve_utils.CurvePathPlanner.compute_spiral_3d(
+        #         self.mesh, cx, cy, radius, step, z_thresh=-0.5
+        #     )
+        # else:
+        #     # Placeholder for zigzag
+        #     pts, norms = curve_utils.CurvePathPlanner.compute_spiral_3d(
+        #         self.mesh, cx, cy, radius, step, z_thresh=-0.5
+        #     )
+
+        z_thresh_val = np.cos(np.radians(max_angle))
+
         if self.rb_spiral.isChecked():
             pts, norms = curve_utils.CurvePathPlanner.compute_spiral_3d(
-                self.mesh, cx, cy, radius, step, z_thresh=-0.5
+                self.mesh, cx, cy, radius, step, z_thresh=z_thresh_val
             )
         else:
-            # Placeholder for zigzag
-            pts, norms = curve_utils.CurvePathPlanner.compute_spiral_3d(
-                self.mesh, cx, cy, radius, step, z_thresh=-0.5
+            # 修正了之前的 Placeholder，现在可以正常调用 Zigzag 算法并应用法向过滤
+            pts, norms = curve_utils.CurvePathPlanner.generate_zigzag_path(
+                self.mesh, step, z_thresh=z_thresh_val
             )
 
         self.current_points = pts
