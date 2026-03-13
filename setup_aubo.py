@@ -164,12 +164,12 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("<font color='#a0c4ff'>起始点 (首个点) 在真实机械臂下的位姿：</font>"))
 
         # 默认使用你提供的初始坐标
-        self.le_z_x = QLineEdit("0.134523")
-        self.le_z_y = QLineEdit("0.276265")
-        self.le_z_z = QLineEdit("0.023243")
-        self.le_z_rx = QLineEdit("-2.669935")
-        self.le_z_ry = QLineEdit("0.003403")
-        self.le_z_rz = QLineEdit("1.570796")
+        self.le_z_x = QLineEdit("0.121665")
+        self.le_z_y = QLineEdit("0.550117")
+        self.le_z_z = QLineEdit("-0.067092")
+        self.le_z_rx = QLineEdit("3.14158279248")
+        self.le_z_ry = QLineEdit("-0.00000424115")
+        self.le_z_rz = QLineEdit("-1.570790061062882")
 
         h_pos1 = QHBoxLayout()
         h_pos1.addWidget(QLabel("X:"))
